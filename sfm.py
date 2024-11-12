@@ -13,7 +13,7 @@ from preprocess import SCENE_GRAPH_FILE, RANSAC_MATCH_DIR, RANSAC_ESSENTIAL_DIR,
 from bundle_adjustment import compute_ba_residuals
 
 
-def get_init_image_ids(scene_graph: dict) -> (str, str):
+def get_init_image_ids(scene_graph: dict) -> (str, str):  # 初始化图像对选择
     """
     Returns the initial pair for incremental sfm. We pick the image pair with the largest number of inliers
 
@@ -26,21 +26,29 @@ def get_init_image_ids(scene_graph: dict) -> (str, str):
     """
     max_pair = [None, None]  # dummy value
     """ YOUR CODE HERE """
-    
-
+    max_num_inliers = 0
+    for image_id1 in scene_graph.keys():
+        neighbors = scene_graph[image_id1]
+        for image_id2 in neighbors:
+            
+            matches = load_matches(image_id1=image_id1, image_id2=image_id2)
+            num_inliers = matches.shape[0]
+            if num_inliers > max_num_inliers:
+                max_num_inliers = num_inliers
+                max_pair = [image_id1, image_id2]
 
     """ END YOUR CODE HERE """
     image_id1, image_id2 = sorted(max_pair)
     return image_id1, image_id2
 
 
-def visualize_point_cloud(pts: np.ndarray):
+def visualize_point_cloud(pts: np.ndarray): # 三维点云可视化
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(pts)
     o3d.visualization.draw([pcd])
 
 
-def load_matches(image_id1: str, image_id2: str) -> np.ndarray:
+def load_matches(image_id1: str, image_id2: str) -> np.ndarray: # 加载图像匹配
     """ Returns N x 2 indexes of matches  [i,j] where keypoints1[i] at image_id1 corresponds to keypoints2[j]
     for image_id2 """
     sorted_nodes = sorted([image_id1, image_id2])
@@ -51,7 +59,7 @@ def load_matches(image_id1: str, image_id2: str) -> np.ndarray:
         matches = np.flip(matches, axis=1)
     return matches
 
-
+# 计算初始图像对的外参矩阵
 def get_init_extrinsics(image_id1: str, image_id2: str, intrinsics: np.ndarray) -> (np.ndarray, np.ndarray):
     """
     Assume that the image_id1 is at [I|0] and second image_id2 is at [R|t] where R, t are derived from the
@@ -78,9 +86,14 @@ def get_init_extrinsics(image_id1: str, image_id2: str, intrinsics: np.ndarray) 
 
     extrinsics2 = np.zeros(shape=[3, 4], dtype=float)
     """ YOUR CODE HERE """
-    
+    # Assume that the image_id1 is at [I|0]
+    extrinsics1 = np.array([[1, 0, 0, 0],
+                            [0, 1, 0, 0],
+                            [0, 0, 1, 0]])
 
-
+    # Find extrinsic for image_id2
+    _, R, t, _ = cv2.recoverPose(E=essential_mtx, points1=points2d_1, points2=points2d_2, cameraMatrix=intrinsics)
+    extrinsics2 = np.concatenate((R, t), axis=1)
     """ END YOUR CODE HERE """
     return extrinsics1, extrinsics2
 
@@ -119,7 +132,7 @@ def initialize(scene_graph: dict, intrinsics: np.ndarray):
     }
     return image_id1, image_id2, extrinsics1, extrinsics2, points3d, correspondences2d3d
 
-
+# 三角化
 def triangulate(image_id1: str, image_id2: str, kp_idxs1: np.ndarray, kp_idxs2: np.ndarray,
                 extrinsics1: np.ndarray, extrinsics2: np.ndarray, intrinsics: np.ndarray):
     proj_pts1 = get_selected_points2d(image_id=image_id1, select_idxs=kp_idxs1)
@@ -134,7 +147,7 @@ def triangulate(image_id1: str, image_id2: str, kp_idxs1: np.ndarray, kp_idxs2: 
     points3d = points3d[:, :3] / points3d[:, 3].reshape(-1, 1)
     return points3d
 
-
+# 计算重投影误差
 def get_reprojection_residuals(points2d: np.ndarray, points3d: np.ndarray, intrinsics: np.ndarray,
                                rotation_mtx: np.ndarray, tvec: np.ndarray) -> np.ndarray:
     """
@@ -154,13 +167,26 @@ def get_reprojection_residuals(points2d: np.ndarray, points3d: np.ndarray, intri
     """
     residuals = np.zeros(points2d.shape[0])
     """ YOUR CODE HERE """
-   
+    # Homogenerized 3d points
+    homo_3d_points = np.concatenate((points3d, np.ones((points3d.shape[0], 1))), axis=1)
+    homo_3d_points_T = np.transpose(homo_3d_points)
 
+    # Compute projection matrix
+    extrinsics = np.concatenate([rotation_mtx, tvec.reshape(-1, 1)], axis=1)
+    P = np.matmul(intrinsics, extrinsics)
+    
+    # Projection of 3d points
+    calculated_pts2d = np.matmul(P, homo_3d_points_T)
+    calculated_pts2d /= calculated_pts2d[-1, :]
+    calculated_pts2d = calculated_pts2d[:-1]
+    calculated_pts2d = np.transpose(calculated_pts2d)
 
+    # Compute distance
+    residuals = np.linalg.norm(points2d - calculated_pts2d, axis=1)
     """ END YOUR CODE HERE """
     return residuals
 
-
+# 解决PnP问题
 def solve_pnp(image_id: str, point2d_idxs: np.ndarray, all_points3d: np.ndarray, point3d_idxs: np.ndarray,
               intrinsics: np.ndarray, num_ransac_iterations: int = 200, inlier_threshold: float = 5.0):
     """
@@ -202,9 +228,19 @@ def solve_pnp(image_id: str, point2d_idxs: np.ndarray, all_points3d: np.ndarray,
         2. convert the returned rotation vector to rotation matrix using cv2.Rodrigues
         3. compute the reprojection residuals
         """
-       
+        _, rotation_vector, tvec = cv2.solvePnP(objectPoints=selected_pts3d, 
+                                                imagePoints=selected_pts2d, 
+                                                cameraMatrix=intrinsics, 
+                                                distCoeffs=None, 
+                                                flags=cv2.SOLVEPNP_ITERATIVE)
 
+        rotation_mtx, _ = cv2.Rodrigues(rotation_vector)
 
+        residuals = get_reprojection_residuals(points2d=points2d, 
+                                               points3d=points3d,
+                                               intrinsics=intrinsics,
+                                               rotation_mtx=rotation_mtx,
+                                               tvec=tvec)
         """ END YOUR CODE HERE """
 
         is_inlier = residuals <= inlier_threshold
@@ -219,7 +255,7 @@ def solve_pnp(image_id: str, point2d_idxs: np.ndarray, all_points3d: np.ndarray,
     inlier_idxs = np.argwhere(max_is_inlier).reshape(-1)
     return max_rotation_mtx, max_tvec, inlier_idxs
 
-
+# 从新的图像对中三角化新的3D点，并更新2D-3D对应关系
 def add_points3d(image_id1: str, image_id2: str, all_extrinsic: dict, intrinsics, points3d: np.ndarray,
                  correspondences2d3d: dict):
     """
@@ -254,9 +290,13 @@ def add_points3d(image_id1: str, image_id2: str, all_extrinsic: dict, intrinsics
     triangulate between the image points for the unregistered matches for image_id1 and image_id2 to get new points3d
     new_points3d = triangulate(..., kp_idxs1=matches[:, 0], kp_idxs2=matches[:, 1], ...)
     """
-    
-
-
+    new_points3d = triangulate(image_id1=image_id1, 
+                               image_id2=image_id2, 
+                               kp_idxs1=matches[:, 0], 
+                               kp_idxs2=matches[:, 1], 
+                               extrinsics1=all_extrinsic[image_id1],
+                               extrinsics2=all_extrinsic[image_id2],
+                               intrinsics=intrinsics)
     """ END YOUR CODE HERE """
 
     num_new_points3d = new_points3d.shape[0]
@@ -268,7 +308,7 @@ def add_points3d(image_id1: str, image_id2: str, all_extrinsic: dict, intrinsics
     points3d = np.concatenate([points3d, new_points3d], axis=0)
     return points3d, correspondences2d3d
 
-
+# 从场景图中找到下一个要注册的图像对
 def get_next_pair(scene_graph: dict, registered_ids: list):
     """
     Finds the next match where the one of the images is unregistered while the other is registered. The next image pair
@@ -285,14 +325,21 @@ def get_next_pair(scene_graph: dict, registered_ids: list):
     """
     max_new_id, max_registered_id, max_num_inliers = None, None, 0
     """ YOUR CODE HERE """
-    
-
-
-    
+    for registered_id in registered_ids:
+        neighbors = scene_graph[registered_id]
+        for new_id in neighbors:
+            if new_id not in registered_ids:
+                matches = load_matches(registered_id, new_id)
+                num_inliers = matches.shape[0]
+                if num_inliers > max_num_inliers:
+                    max_num_inliers = num_inliers
+                    max_new_id = new_id
+                    max_registered_id = registered_id
+                        
     """ END YOUR CODE HERE """
     return max_new_id, max_registered_id
 
-
+# 获取给定图像对的2D-3D对应关系
 def get_pnp_2d3d_correspondences(image_id1: str, image_id2: str, correspondences2d3d: dict) -> (np.ndarray, np.ndarray):
     """
     Returns 2d and 3d correspondences for the image_id1 and the current world points. We use the transitive property
@@ -316,7 +363,7 @@ def get_pnp_2d3d_correspondences(image_id1: str, image_id2: str, correspondences
     point3d_idxs = np.array([correspondences2d3d[image_id2][i] for i in points2d_idxs2])
     return points2d_idxs1, point3d_idxs
 
-
+# 束调整
 def bundle_adjustment(registered_ids: list, points3d: np.ndarray, correspondences2d3d: np.ndarray,
                       all_extrinsics: dict, intrinsics: np.ndarray, max_nfev: int = 30):
     # create parameters
@@ -370,7 +417,7 @@ def bundle_adjustment(registered_ids: list, points3d: np.ndarray, correspondence
     points3d = updated_parameters[num_cameras * 6:].reshape(-1, 3)
     return all_extrinsics, points3d
 
-
+# 增量SfM
 def incremental_sfm(registered_ids: list, all_extrinsic: dict, intrinsics: np.ndarray, points3d: np.ndarray,
                     correspondences2d3d: dict, scene_graph: dict, has_bundle_adjustment: bool) -> \
         (np.ndarray, dict, dict, list):
@@ -406,7 +453,7 @@ def incremental_sfm(registered_ids: list, all_extrinsic: dict, intrinsics: np.nd
 
 
 def main():
-    # set seeds
+    # set seeds 设置随机种子
     seed = 12345
     np.random.seed(seed)
     random.seed(seed)
