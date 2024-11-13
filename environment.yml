@@ -1,4 +1,4 @@
-name: sfm
+name: sfm1
 channels:
   - conda-forge
   - defaults
