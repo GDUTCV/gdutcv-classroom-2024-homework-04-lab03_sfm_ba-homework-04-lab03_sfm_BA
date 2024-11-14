@@ -118,7 +118,10 @@ def detect_keypoints(image_file: os.path):
     """ YOUR CODE HERE:
     Detect keypoints using cv2.SIFT_create() and sift.detectAndCompute
     """
-    
+    image = cv2.imread(image_file, cv2.IMREAD_GRAYSCALE)
+    # mask =
+    sift = cv2.SIFT_create(nfeatures=0, nOctaveLayers=3, contrastThreshold=0.04, edgeThreshold=10, sigma=1.6)
+    keypoints, descriptors = sift.detectAndCompute(image, mask=None)
 
 
     """ END YOUR CODE HERE. """
@@ -167,14 +170,33 @@ def create_feature_matches(image_file1: os.path, image_file2: os.path, lowe_rati
     1. Run cv.BFMatcher() and matcher.knnMatch(descriptors1, descriptors2, 2)
     2. Filter the feature matches using the Lowe ratio test.
     """
-    
+
+
+    # # Initiate ORB detector
+    # orb = cv.ORB_create()
+    #
+    # # find the keypoints and descriptors with ORB
+    # kp1, des1 = orb.detectAndCompute(image1, None)
+    # kp2, des2 = orb.detectAndCompute(image2, None)
+
+    # create BFMatcher object
+    # bf = cv.BFMatcher(cv.NORM_HAMMING, crossCheck=True)
+    bf = cv2.BFMatcher()
+
+    # Match descriptors.
+    matches = bf.knnMatch(descriptors1, descriptors2, k=2)
+
+    for m, n in matches:
+        if m.distance < lowe_ratio * n.distance:
+            good_matches.append([m])
+
+    # Sort them in the order of their distance.
+    # good_matches = sorted(matches, key=lambda x: x.distance)
 
 
     """ END YOUR CODE HERE. """
     if len(good_matches) < min_matches:
         return match_id
-
-    # image visualization of feature matching
     image1 = cv2.imread(image_file1)
     image2 = cv2.imread(image_file2)
     save_image = cv2.drawMatchesKnn(img1=image1, keypoints1=keypoints1, img2=image2, keypoints2=keypoints2,
@@ -182,8 +204,6 @@ def create_feature_matches(image_file1: os.path, image_file2: os.path, lowe_rati
                                     flags=cv2.DRAW_MATCHES_FLAGS_NOT_DRAW_SINGLE_POINTS)
     cv2.imwrite(image_save_file, save_image)
     good_matches = [match[0] for match in good_matches]
-
-    # save the feature matches
     feature_matches = []
     for match in good_matches:
         feature_matches.append([match.queryIdx, match.trainIdx])
@@ -242,8 +262,9 @@ def create_ransac_matches(image_file1: os.path, image_file2: os.path,
     Perform goemetric verification by finding the essential matrix between keypoints in the first image and keypoints in
     the second image using cv2.findEssentialMatrix(..., method=cv2.RANSAC, threshold=ransac_threshold, ...)
     """
-    
-
+    essential_mtx, is_inlier = cv2.findEssentialMat(points1, points2, camera_intrinsics,
+                                                       method=cv2.RANSAC, prob=0.999,
+                                                       threshold=ransac_threshold)
 
     """ END YOUR CODE HERE """
 
@@ -278,8 +299,16 @@ def create_scene_graph(image_files: list, min_num_inliers: int = 40):
     Add edges to <graph> if the minimum number of geometrically verified inliers between images is at least  
     <min_num_inliers> 
     """
-    
-
+    for i in range(len(image_files)):
+        for j in range(i + 1, len(image_files)):
+            image_id1 = image_ids[i]
+            image_id2 = image_ids[j]
+            match_id = f"{image_id1}_{image_id2}"
+            match_file = os.path.join(RANSAC_MATCH_DIR, match_id + '.npy')
+            if os.path.exists(match_file):
+                inliers = np.load(match_file)
+                if inliers.shape[0] >= min_num_inliers:
+                    graph.add_edge(i, j)
     
     """ END YOUR CODE HERE """
 
