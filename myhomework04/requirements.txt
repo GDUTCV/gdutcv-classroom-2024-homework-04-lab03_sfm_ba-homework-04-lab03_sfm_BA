@@ -1,8 +1,0 @@
-numpy
-opencv-python
-h5py
-tqdm
-networkx
-torch
-open3d
-scipy
