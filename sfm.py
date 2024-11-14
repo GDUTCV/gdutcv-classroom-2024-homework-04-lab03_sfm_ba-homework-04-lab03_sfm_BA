@@ -26,11 +26,19 @@ def get_init_image_ids(scene_graph: dict) -> (str, str):
     """
     max_pair = [None, None]  # dummy value
     """ YOUR CODE HERE """
-    
+    max_inliers = 0
+    for image_id1 in scene_graph.keys():
+        neighbors = scene_graph[image_id1]
+        for image_id2 in neighbors:
 
-
+            matches = load_matches(image_id1=image_id1, image_id2=image_id2)
+            inliers = matches.shape[0]
+            if inliers > max_inliers:
+                max_inliers = inliers
+                max_pair = [image_id1, image_id2]
     """ END YOUR CODE HERE """
     image_id1, image_id2 = sorted(max_pair)
+    print(image_id1)
     return image_id1, image_id2
 
 
@@ -78,8 +86,11 @@ def get_init_extrinsics(image_id1: str, image_id2: str, intrinsics: np.ndarray) 
 
     extrinsics2 = np.zeros(shape=[3, 4], dtype=float)
     """ YOUR CODE HERE """
-    
-
+    points2d_1_norm = cv2.undistortPoints(np.expand_dims(points2d_1, axis=1), intrinsics, None)
+    points2d_2_norm = cv2.undistortPoints(np.expand_dims(points2d_2, axis=1), intrinsics, None)
+    _, R, t, _ = cv2.recoverPose(essential_mtx, points2d_1_norm, points2d_2_norm, intrinsics)
+    extrinsics2[:3, :3] = R
+    extrinsics2[:, 3] = t[:, 0]
 
     """ END YOUR CODE HERE """
     return extrinsics1, extrinsics2
@@ -154,8 +165,12 @@ def get_reprojection_residuals(points2d: np.ndarray, points3d: np.ndarray, intri
     """
     residuals = np.zeros(points2d.shape[0])
     """ YOUR CODE HERE """
-   
-
+    points3d_homogeneous = np.hstack((points3d, np.ones((points3d.shape[0], 1))))
+    projection_mtx = np.hstack((rotation_mtx, tvec.reshape(-1, 1)))
+    camera_mtx = intrinsics @ projection_mtx
+    projected_points_homogeneous = (camera_mtx @ points3d_homogeneous.T).T
+    projected_points_2d = projected_points_homogeneous[:, :2] / projected_points_homogeneous[:, 2].reshape(-1, 1)
+    residuals = np.linalg.norm(points2d - projected_points_2d, axis=1)
 
     """ END YOUR CODE HERE """
     return residuals
@@ -202,8 +217,16 @@ def solve_pnp(image_id: str, point2d_idxs: np.ndarray, all_points3d: np.ndarray,
         2. convert the returned rotation vector to rotation matrix using cv2.Rodrigues
         3. compute the reprojection residuals
         """
-       
+        success, rvec, tvec = cv2.solvePnP(
+            selected_pts3d, selected_pts2d, intrinsics, distCoeffs=None, flags=cv2.SOLVEPNP_ITERATIVE
+        )
+        if not success:
+            continue
+        rotation_mtx, _ = cv2.Rodrigues(rvec)
+        projected_pts, _ = cv2.projectPoints(points3d, rvec, tvec, intrinsics, distCoeffs=None)
+        projected_pts = projected_pts.squeeze()
 
+        residuals = np.linalg.norm(points2d - projected_pts, axis=1)
 
         """ END YOUR CODE HERE """
 
@@ -254,8 +277,12 @@ def add_points3d(image_id1: str, image_id2: str, all_extrinsic: dict, intrinsics
     triangulate between the image points for the unregistered matches for image_id1 and image_id2 to get new points3d
     new_points3d = triangulate(..., kp_idxs1=matches[:, 0], kp_idxs2=matches[:, 1], ...)
     """
-    
-
+    points2d_1 = get_selected_points2d(image_id=image_id1, select_idxs=matches[:, 0])
+    points2d_2 = get_selected_points2d(image_id=image_id2, select_idxs=matches[:, 1])
+    proj_matrix1 = intrinsics @ all_extrinsic[image_id1]
+    proj_matrix2 = intrinsics @ all_extrinsic[image_id2]
+    points4d_homogeneous = cv2.triangulatePoints(proj_matrix1, proj_matrix2, points2d_1.T, points2d_2.T)
+    new_points3d = (points4d_homogeneous[:3] / points4d_homogeneous[3]).T
 
     """ END YOUR CODE HERE """
 
@@ -268,7 +295,38 @@ def add_points3d(image_id1: str, image_id2: str, all_extrinsic: dict, intrinsics
     points3d = np.concatenate([points3d, new_points3d], axis=0)
     return points3d, correspondences2d3d
 
-
+# ###############################
+# def get_num_inliers(image_id1: str, image_id2: str) -> int:
+#     """
+#     Computes the number of inliers between two images using feature matching.
+#
+#     Args:
+#         image_id1: ID of the first image
+#         image_id2: ID of the second image
+#
+#     Returns:
+#         inliers: number of inliers (matches)
+#     """
+#     # Load the images (this assumes images are located in a specific path)
+#     img1 = cv2.imread(f'path_to_images/{image_id1}.jpg', cv2.IMREAD_GRAYSCALE)
+#     img2 = cv2.imread(f'path_to_images/{image_id2}.jpg', cv2.IMREAD_GRAYSCALE)
+#
+#     # Initialize ORB detector (you can use SIFT, SURF, etc., depending on what you prefer)
+#     orb = cv2.ORB_create()
+#
+#     # Detect keypoints and compute descriptors
+#     kp1, des1 = orb.detectAndCompute(img1, None)
+#     kp2, des2 = orb.detectAndCompute(img2, None)
+#
+#     # Create a BFMatcher to match descriptors
+#     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+#     matches = bf.match(des1, des2)
+#
+#     # Number of inliers is the number of good matches
+#     inliers = len(matches)
+#
+#     return inliers
+# ####################################################
 def get_next_pair(scene_graph: dict, registered_ids: list):
     """
     Finds the next match where the one of the images is unregistered while the other is registered. The next image pair
@@ -285,10 +343,17 @@ def get_next_pair(scene_graph: dict, registered_ids: list):
     """
     max_new_id, max_registered_id, max_num_inliers = None, None, 0
     """ YOUR CODE HERE """
-    
-
-
-    
+    for registered_id in registered_ids:
+        neighbors = scene_graph[registered_id]
+        for new_id in neighbors:
+            if new_id not in registered_ids:
+                matches = load_matches(registered_id, new_id)
+                num_inliers = matches.shape[0]
+                if num_inliers > max_num_inliers:
+                    max_num_inliers = num_inliers
+                    max_new_id = new_id
+                    max_registered_id = registered_id
+    # print(scene_graph)
     """ END YOUR CODE HERE """
     return max_new_id, max_registered_id
 
@@ -314,6 +379,7 @@ def get_pnp_2d3d_correspondences(image_id1: str, image_id2: str, correspondences
     match_idxs = np.array(match_idxs)
     points2d_idxs1 = matches[match_idxs, 0]
     point3d_idxs = np.array([correspondences2d3d[image_id2][i] for i in points2d_idxs2])
+    print(points2d_idxs1)
     return points2d_idxs1, point3d_idxs
 
 
